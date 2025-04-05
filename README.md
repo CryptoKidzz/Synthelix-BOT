@@ -2,22 +2,33 @@
 
 [Register](https://dashboard.synthelix.io/r/31BEkzFH)
 
+## Features
+- Support multi account
+- Auto start node
+- Auto claim point
+- Monitoring node status and points
+
 ## Requirements
 - Node.js 18+
 - Npm (Node Package Manager)
+- Cookie token
 
 ## Installation
-1. Clone this repository
+1. Create screen
+```bash
+screen -S synthelix
+```
+2. Clone this repository
 ```bash
 git clone https://github.com/0x-Disciple/synthelix-bot.git && cd synthelix-bot
 ```
-2. Install dependencies
+3. Install dependencies
 ```bash
 npm install
 ```
-3. Fill im your token in `data.txt`
+4. Fill im your token in `data.txt`
 
-4. Run 
+5. Run 
 ```bash
 node index.js
 ```
