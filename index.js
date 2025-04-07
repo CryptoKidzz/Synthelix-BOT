@@ -8,7 +8,11 @@ const banner = require('./config/banner');
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
-const cookies = fs.readFileSync("data.txt", "utf-8").trim().split("\n");
+const cookies = fs.readFileSync("data.txt", "utf-8")
+  .trim()
+  .split("\n")
+  .map(line => line.trim())
+  .filter(line => line !== "" && /^__Secure-next-auth\.session-token=.+/.test(line));
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -52,74 +56,121 @@ async function getNodeStatus(headers) {
   }
 }
 
-async function startNode(headers) {
-  try {
-    const res = await axios.post("https://dashboard.synthelix.io/api/node/start", null, { headers });
-    const { startTime } = res.data;
-    const formattedTime = dayjs.utc(startTime).tz("Asia/Jakarta").format("YYYY-MM-DD HH:mm:ss");
-    console.log(chalk.green(`[INFO] Node started succesfully at: ${formattedTime} WIB`));
-  } catch (err) {
-    const msg = err.response?.data?.message || err.message;
-    if (msg === "Node is already running") {
-      console.log(chalk.green("[INFO] Node is already running."));
-    } else {
-      console.log(chalk.red("❌ Failed to start node:"), msg);
+async function stopNodeAndClaim(headers, nodeStatus) {
+  const url = 'https://dashboard.synthelix.io/api/node/stop';
+
+  const body = {
+    claimedHours: nodeStatus.elapsedHours,
+    pointsEarned: nodeStatus.currentEarnedPoints
+  };
+
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const response = await axios.post(url, body, { headers });
+      if (response.status === 200) {
+        const earned = response.data?.data?.earnedPoints ?? body.pointsEarned;
+        console.log(chalk.green(`[✅] Successfully stopped node and claimed rewards!`));
+        console.log(chalk.green(`[INFO] Earned Points from node :  ${earned}`));
+        return true;
+      }
+    } catch (error) {
+      console.log(chalk.red(`❌ Failed stop node and claim rewards (Attempt ${attempt}): ${error.message}`));
+    }
+    await delay(10000);
+  }
+
+  console.log(chalk.red(`❌ stop node and claim rewards failed after 5 attempts.`));
+  return false;
+}
+
+async function retryOperation(fn, args, successCondition, description, retries = 5, delayMs = 10000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const result = await fn(...args);
+      if (successCondition(result)) return result;
+    } catch (err) {
+      console.log(chalk.red(`❌ Failed ${description} (Attempt ${attempt}):`), err.message);
+    }
+    if (attempt < retries) {
+      console.log(chalk.yellow(`⏳ Retrying ${description} in ${delayMs / 1000}s...`));
+      await delay(delayMs);
     }
   }
+  console.log(chalk.red(`❌ ${description} failed after ${retries} attempts.`));
+  return null;
+}
+
+async function startNode(headers) {
+  return await retryOperation(
+    async (h) => {
+      const res = await axios.post("https://dashboard.synthelix.io/api/node/start", null, { headers: h });
+      const { startTime } = res.data;
+      const formattedTime = dayjs.utc(startTime).tz("Asia/Jakarta").format("YYYY-MM-DD HH:mm:ss");
+      console.log(chalk.green(`[INFO] Node started succesfully at: ${formattedTime} WIB`));
+      return true;
+    },
+    [headers],
+    (res) => res === true,
+    "start node"
+  );
 }
 
 async function claimDailyPoint(headers, amount) {
-  try {
-    const res = await axios.post("https://dashboard.synthelix.io/api/rew/dailypoints", { points: amount }, { headers });
-    const { points, lastDailyClaim } = res.data;
-    const formattedTime = dayjs.utc(lastDailyClaim).tz("Asia/Jakarta").format("YYYY-MM-DD HH:mm:ss");
-    console.log(chalk.green(`[INFO] Claimed daily: succesfully at ${formattedTime} WIB`));
-    console.log(chalk.green(`[INFO] Points claimed : ${points}`));
-  } catch (err) {
-    const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message;
-    console.log(chalk.red("❌ Failed to claim daily point:"), errorMsg);
-    if (err.response?.data) {
-      console.log("📦 Response body:", err.response.data);
-    }
-  }
+  return await retryOperation(
+    async (h, amt) => {
+      const res = await axios.post("https://dashboard.synthelix.io/api/rew/dailypoints", { points: amt }, { headers: h });
+      const { points, lastDailyClaim } = res.data;
+      const formattedTime = dayjs.utc(lastDailyClaim).tz("Asia/Jakarta").format("YYYY-MM-DD HH:mm:ss");
+      console.log(chalk.green(`[INFO] Claimed daily: succesfully at ${formattedTime} WIB`));
+      console.log(chalk.green(`[INFO] claimed points daily : ${points}`));
+      return true;
+    },
+    [headers, amount],
+    (res) => res === true,
+    "claim daily point"
+  );
 }
 
 async function processAccount(cookie, index) {
   console.log(chalk.cyan(`\n🔄 Running account #${index + 1}`));
   const headers = buildHeaders(cookie);
 
-  await startNode(headers);
+  const nodeStatus = await getNodeStatus(headers);
+  if (!nodeStatus) return;
 
   const lastClaim = await getLastClaim(headers);
   const now = dayjs.utc();
+  const nextClaimTime = dayjs.utc(lastClaim).add(1, 'day');
 
-  if (lastClaim) {
-    const nextClaimTime = dayjs.utc(lastClaim).add(1, 'day');
-    if (now.isBefore(nextClaimTime)) {
-      const formattedLast = dayjs.utc(lastClaim).tz("Asia/Jakarta").format("YYYY-MM-DD HH:mm:ss");
-      console.log(chalk.yellow(`[INFO] Already claimed today. Last claim was at: ${formattedLast} WIB`));
+  const totalPointsBefore = await getPoints(headers);
 
-      const nodeStatus = await getNodeStatus(headers);
-      if (nodeStatus) {
-        console.log(chalk.blue(`[INFO] Node Status: ${nodeStatus.nodeRunning ? "Running ✅" : "Stopped ❌"}`));
-        console.log(chalk.blue(`[INFO] Earned Points from Node: ${nodeStatus.currentEarnedPoints}`));
+  if (nodeStatus.nodeRunning && nodeStatus.currentEarnedPoints > 0) {
+    console.log(chalk.yellow(`[INFO] Stopping node to claim earned points...`));
+    const stopSuccess = await stopNodeAndClaim(headers, nodeStatus);
+    if (stopSuccess) {
+      await delay(5000);
+      const statusAfterStop = await getNodeStatus(headers);
+      if (!statusAfterStop?.nodeRunning) {
+        await startNode(headers);
+      } else {
+        console.log(chalk.yellow(`[INFO] Node already running, skipping start.`));
       }
-
-      const totalPoints = await getPoints(headers);
-      console.log(chalk.blue(`[INFO] Total Points: ${totalPoints}`));
-
-      return;
     }
   }
 
-  const beforePoints = await getPoints(headers);
-  console.log(chalk.cyan(`[INFO] Points before claim: ${beforePoints}`));
+  if (now.isAfter(nextClaimTime)) {
+    const claimAmount = Math.min(totalPointsBefore, 1000);
+    if (claimAmount > 0) {
+      await claimDailyPoint(headers, claimAmount);
+    }
+  } else {
+    const formattedLast = dayjs.utc(lastClaim).tz("Asia/Jakarta").format("YYYY-MM-DD HH:mm:ss");
+    console.log(chalk.yellow(`[INFO] Already claimed today. Last claim was at: ${formattedLast} WIB`));
+    console.log(chalk.blue(`[INFO] Node Status: ${nodeStatus.nodeRunning ? "Running ✅" : "Stopped ❌"}`));
+  }
 
-  const claimAmount = beforePoints > 0 ? beforePoints : 1;
-  await claimDailyPoint(headers, claimAmount);
-
-  const totalPoints = await getPoints(headers);
-  console.log(chalk.cyan(`[INFO] Total Points: ${totalPoints}`));
+  const totalPointsAfter = await getPoints(headers);
+  console.log(chalk.cyan(`[INFO] Total Points: ${totalPointsAfter}`));
 }
 
 async function runAllAccounts() {
