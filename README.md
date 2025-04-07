@@ -20,7 +20,7 @@ screen -S synthelix
 ```
 2. Clone this repository
 ```bash
-git clone https://github.com/AirdropLegionCommunity/Synthelix-BOT.git && cd Synthelix-BOT
+git clone https://github.com/CryptoKidzz/Synthelix-BOT.git && cd Synthelix-BOT
 ```
 3. Install dependencies
 ```bash
